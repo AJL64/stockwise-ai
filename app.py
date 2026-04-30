@@ -7,9 +7,11 @@ from openai import OpenAI
 import requests
 
 # --- CONFIGURATION & API KEYS ---
-OPENAI_API_KEY = "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"
-TELEGRAM_TOKEN = "8781116757:AAHd54S3qxApFExYC84SIsQKC9itSrEqrJQ"
-TELEGRAM_CHAT_ID = "500159147"
+# --- CONFIGURATION & SECRETS ---
+# Streamlit Cloud will now pull these from the "Secrets" menu automatically
+OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
+TELEGRAM_TOKEN = st.secrets["TELEGRAM_TOKEN"]
+TELEGRAM_CHAT_ID = st.secrets["TELEGRAM_CHAT_ID"]
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 PORTFOLIO_FILE = "my_portfolio.csv"
