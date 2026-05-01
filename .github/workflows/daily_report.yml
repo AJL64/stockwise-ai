@@ -1,0 +1,52 @@
+name: Daily Stock Briefing
+on:
+  schedule:
+    # Runs at 07:00 UTC (10:00 AM Israel Time)
+    - cron: '0 7 * * *'
+  workflow_dispatch: # This adds the "Play" button for manual testing
+
+jobs:
+  send_briefing:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: pip install yfinance openai requests pandas
+
+      - name: Run Briefing Script
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python -c "
+          import yfinance as yf
+          import os
+          import requests
+          from openai import OpenAI
+          import pandas as pd
+
+          try:
+              client = OpenAI(api_key=os.environ['OPENAI_API_KEY'])
+              df = pd.read_csv('my_portfolio.csv')
+              summary = []
+
+              for sym in df['Symbol'].head(8):
+                  t = yf.Ticker(sym)
+                  change = t.info.get('regularMarketChangePercent', 0)
+                  summary.append(f'{sym}: {change:.2f}%')
+
+              report = '📈 *Morning Portfolio Briefing* ☕\n\n' + '\n'.join(summary)
+              
+              url = f'https://api.telegram.org/bot{os.environ[\"TELEGRAM_TOKEN\"]}/sendMessage'
+              requests.post(url, json={'chat_id': os.environ['TELEGRAM_CHAT_ID'], 'text': report, 'parse_mode': 'Markdown'})
+          except Exception as e:
+              print(f'Error: {e}')
+          "
