@@ -1,20 +1,38 @@
-# --- Configuration & API Keys ---
 import streamlit as st
 import pandas as pd
 import os
 import yfinance as yf
 from openai import OpenAI
 import requests
+from datetime import datetime
 
-# --- CONFIGURATION & API KEYS ---
 # --- CONFIGURATION & SECRETS ---
-# Streamlit Cloud will now pull these from the "Secrets" menu automatically
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
 TELEGRAM_TOKEN = st.secrets["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = st.secrets["TELEGRAM_CHAT_ID"]
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 PORTFOLIO_FILE = "my_portfolio.csv"
+LOG_FILE = "advisor_log.csv"
+
+# --- DATA HANDLING ---
+def load_data(file, columns):
+    if os.path.exists(file): return pd.read_csv(file)
+    return pd.DataFrame(columns=columns)
+
+def save_data(df, file): df.to_csv(file, index=False)
+
+def log_recommendation(symbol, name, analysis, price):
+    log_df = load_data(LOG_FILE, ["Date", "Symbol", "Name", "Price_At_Rec", "Analysis"])
+    new_row = pd.DataFrame([{
+        "Date": datetime.now().strftime("%Y-%m-%d"),
+        "Symbol": symbol,
+        "Name": name,
+        "Price_At_Rec": round(price, 2),
+        "Analysis": analysis
+    }])
+    log_df = pd.concat([log_df, new_row], ignore_index=True)
+    save_data(log_df, LOG_FILE)
 
 # --- TECHNICAL CALCULATIONS ---
 def calculate_rsi(data, window=14):
@@ -29,12 +47,10 @@ def get_tech_indicators(symbol):
         ticker = yf.Ticker(symbol)
         hist = ticker.history(period="250d")
         if hist.empty: return None
-        
         info = ticker.info
         current_price = hist['Close'].iloc[-1]
         sma_200 = hist['Close'].rolling(window=200).mean().iloc[-1]
         rsi = calculate_rsi(hist['Close']).iloc[-1]
-        
         return {
             "name": info.get('longName', symbol),
             "price": current_price,
@@ -44,7 +60,7 @@ def get_tech_indicators(symbol):
         }
     except: return None
 
-# --- CORE FUNCTIONS ---
+# --- AI & NOTIFICATIONS ---
 def send_telegram_msg(message):
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -52,59 +68,47 @@ def send_telegram_msg(message):
         try: requests.post(url, json=payload)
         except: pass
 
-def load_data():
-    if os.path.exists(PORTFOLIO_FILE): return pd.read_csv(PORTFOLIO_FILE)
-    return pd.DataFrame(columns=["Symbol", "Quantity", "Purchase_Price"])
-
-def save_data(df): df.to_csv(PORTFOLIO_FILE, index=False)
-
-def get_ai_analysis(symbol, name, tech_data):
+def get_ai_analysis(symbol, name, tech_data, newbie_mode=False):
     news_items = tech_data.get('news', [])
-    titles = [item.get('title') or item.get('headline') or "" for item in news_items[:7]]
+    titles = [item.get('title') or "" for item in news_items[:7]]
     combined_news = "\n".join(filter(None, titles)) if titles else "No news."
     
-    rsi = tech_data['rsi']
+    extra_context = "Special Request: Analyze this for a 'Newbie' looking for 'Good Vibes' and high success probability." if newbie_mode else ""
+
     prompt = f"""
-    Analyze {name} ({symbol}):
-    - Tech: RSI {rsi:.2f}, Trend {tech_data['trend']}.
-    - News: {combined_news}
-    Format: **[Score/10]** | **[REC]** | [Insight]
+    Expert Analysis for {name} ({symbol}):
+    {extra_context}
+    Technicals: RSI {tech_data['rsi']:.2f}, Trend {tech_data['trend']}.
+    News: {combined_news}
+    Format: **[Score/10]** | **[REC]** | [One-sentence insight]
     """
     try:
         response = client.chat.completions.create(
             model="gpt-4o",
-            messages=[{"role": "system", "content": "You are a professional analyst."},
+            messages=[{"role": "system", "content": "You are a professional investment advisor."},
                       {"role": "user", "content": prompt}]
         )
         return response.choices[0].message.content
     except: return "Analysis Error"
 
 # --- UI SETUP ---
-st.set_page_config(page_title="StockWise AI Pro", page_icon="📈", layout="wide")
-
-# Sidebar Legend
-with st.sidebar:
-    st.title("StockWise AI Pro")
-    app_mode = st.selectbox("Navigation", ["Dashboard", "Market Opportunities", "Portfolio Management"])
-    st.divider()
-    st.header("💡 Legend")
-    st.markdown("""
-    **RSI (Momentum)**
-    * **> 70**: Overbought (High)
-    * **< 30**: Oversold (Low)
-    **Trend (200-day SMA)**
-    * **Bullish**: Price > Average.
-    * **Bearish**: Price < Average.
-    """)
+st.set_page_config(page_title="StockWise Advisor Pro", page_icon="🌟", layout="wide")
 
 if 'portfolio' not in st.session_state:
-    st.session_state.portfolio = load_data()
+    st.session_state.portfolio = load_data(PORTFOLIO_FILE, ["Symbol", "Quantity", "Purchase_Price"])
+
+# --- SIDEBAR ---
+with st.sidebar:
+    st.title("StockWise Advisor")
+    app_mode = st.selectbox("Navigation", ["Dashboard", "Analyst Good Vibes", "Performance Log", "Portfolio Management"])
+    st.divider()
+    st.markdown("**Legend:**\n* RSI > 70: Hot/Overbought\n* RSI < 30: Cheap/Oversold\n* Bullish: Safe long-term trend")
 
 # --- DASHBOARD ---
 if app_mode == "Dashboard":
     st.title("My Portfolio 📊")
     if st.session_state.portfolio.empty:
-        st.info("Your portfolio is empty. Add stocks in 'Portfolio Management'.")
+        st.info("Your portfolio is empty. Go to Management to add stocks.")
     else:
         with st.spinner('Updating Market Data...'):
             df = st.session_state.portfolio.copy()
@@ -112,79 +116,86 @@ if app_mode == "Dashboard":
             for sym in df['Symbol']:
                 data = get_tech_indicators(sym)
                 if data:
-                    names.append(data['name'])
-                    prices.append(data['price'])
-                    rsis.append(data['rsi'])
-                    trends.append(data['trend'])
-                    metrics.append(data)
+                    names.append(data['name']); prices.append(data['price']); rsis.append(data['rsi'])
+                    trends.append(data['trend']); metrics.append(data)
                 else:
                     names.append("N/A"); prices.append(0); rsis.append(0); trends.append("N/A"); metrics.append(None)
             
-            df['Name'] = names
-            df['Price'] = prices
-            df['RSI'] = rsis
-            df['Trend'] = trends
+            df['Name'], df['Price'], df['RSI'], df['Trend'] = names, prices, rsis, trends
             df['Value'] = df['Quantity'] * df['Price']
             df['Gain'] = df['Value'] - (df['Quantity'] * df['Purchase_Price'])
 
-        m1, m2 = st.columns(2)
-        m1.metric("Total Value", f"${df['Value'].sum():,.2f}")
-        m2.metric("Total Gain/Loss", f"${df['Gain'].sum():,.2f}")
-        
+        c1, c2 = st.columns(2)
+        c1.metric("Total Value", f"${df['Value'].sum():,.2f}")
+        c2.metric("Total Gain/Loss", f"${df['Gain'].sum():,.2f}")
         st.dataframe(df[['Symbol', 'Name', 'Quantity', 'Price', 'RSI', 'Trend', 'Gain']].style.format(precision=2), use_container_width=True)
         
         if st.button("Run AI Audit"):
             for i, sym in enumerate(df['Symbol']):
                 if metrics[i]:
-                    with st.expander(f"Audit: {df['Name'].iloc[i]} ({sym})"):
-                        st.write(get_ai_analysis(sym, df['Name'].iloc[i], metrics[i]))
+                    with st.expander(f"Audit: {df['Name'].iloc[i]}"):
+                        analysis = get_ai_analysis(sym, df['Name'].iloc[i], metrics[i])
+                        st.write(analysis)
+                        if st.button(f"Log this {sym} Audit", key=f"log_{sym}"):
+                            log_recommendation(sym, df['Name'].iloc[i], analysis, df['Price'].iloc[i])
+                            st.toast(f"Logged {sym}!")
 
-# --- MARKET OPPORTUNITIES ---
-elif app_mode == "Market Opportunities":
-    st.title("Discovery Engine 🔍")
-    scan_list = ["NVDA", "TSLA", "AAPL", "MSFT", "AMD", "META", "AMZN", "GOOGL", "AVGO", "SMCI"]
+# --- ANALYST GOOD VIBES ---
+elif app_mode == "Analyst Good Vibes":
+    st.title("Newbie Friendly & Strong Potential 🌟")
+    st.write("These companies have high analyst scores and 'Good Vibes' for 2026.")
     
-    if st.button("Scan Market"):
-        progress = st.progress(0)
-        for i, sym in enumerate(scan_list):
-            data = get_tech_indicators(sym)
-            if data:
-                st.subheader(f"{data['name']} ({sym})")
-                analysis = get_ai_analysis(sym, data['name'], data)
-                if "BUY" in analysis: st.success(analysis)
-                elif "SELL" in analysis: st.error(analysis)
-                else: st.warning(analysis)
-            progress.progress((i + 1) / len(scan_list))
-        st.balloons()
+    vibes_list = {
+        "MU": "Micron (AI Memory Backbone)",
+        "SG": "Sweetgreen (High-Growth Retail)",
+        "HRMY": "Harmony Bio (Strong Medical Pipeline)",
+        "AMPL": "Amplitude (Digital Intelligence)",
+        "CWCO": "Consolidated Water (Safe Infrastructure)"
+    }
+    
+    for sym, desc in vibes_list.items():
+        with st.expander(f"{sym} - {desc}"):
+            if st.button(f"Analyze {sym} Opportunity"):
+                data = get_tech_indicators(sym)
+                if data:
+                    analysis = get_ai_analysis(sym, data['name'], data, newbie_mode=True)
+                    st.success(analysis)
+                    log_recommendation(sym, data['name'], analysis, data['price'])
+                    st.info("Successfully added to Performance Log.")
+
+# --- PERFORMANCE LOG ---
+elif app_mode == "Performance Log":
+    st.title("Historical AI Advisor Track Record 📈")
+    log_df = load_data(LOG_FILE, ["Date", "Symbol", "Name", "Price_At_Rec", "Analysis"])
+    if log_df.empty:
+        st.info("No recommendations have been logged yet.")
+    else:
+        st.write("Here is what the AI predicted in the past:")
+        st.dataframe(log_df.sort_values(by="Date", ascending=False), use_container_width=True)
 
 # --- PORTFOLIO MANAGEMENT ---
 elif app_mode == "Portfolio Management":
     st.title("Manage Holdings ⚙️")
-    
-    st.subheader("Add / Update Stock")
     with st.form("add_stock"):
         c = st.columns(3)
-        s = c[0].text_input("Ticker Symbol").upper().strip()
-        q = c[1].number_input("Total Quantity", min_value=0.0)
+        s = c[0].text_input("Ticker").upper().strip()
+        q = c[1].number_input("Quantity", min_value=0.0)
         p = c[2].number_input("Purchase Price", min_value=0.0)
-        if st.form_submit_button("Save to Portfolio"):
+        if st.form_submit_button("Save"):
             if s:
                 new_df = st.session_state.portfolio[st.session_state.portfolio['Symbol'] != s]
                 new_row = pd.DataFrame([{"Symbol": s, "Quantity": q, "Purchase_Price": p}])
                 st.session_state.portfolio = pd.concat([new_df, new_row], ignore_index=True)
-                save_data(st.session_state.portfolio)
-                st.success(f"Saved {s}")
+                save_data(st.session_state.portfolio, PORTFOLIO_FILE)
                 st.rerun()
 
     if not st.session_state.portfolio.empty:
         st.divider()
-        st.subheader("Remove Stock")
-        col_del, col_btn = st.columns([2, 1])
-        to_del = col_del.selectbox("Select stock to remove:", st.session_state.portfolio['Symbol'])
-        if col_btn.button("🗑️ Delete Selected", use_container_width=True):
+        to_del = st.selectbox("Remove Stock:", st.session_state.portfolio['Symbol'])
+        if st.button("🗑️ Delete Selected"):
             st.session_state.portfolio = st.session_state.portfolio[st.session_state.portfolio['Symbol'] != to_del]
-            save_data(st.session_state.portfolio)
+            save_data(st.session_state.portfolio, PORTFOLIO_FILE)
             st.rerun()
 
 st.sidebar.divider()
-st.sidebar.caption("v2.7 | Master Portfolio Management")
+st.sidebar.caption("v3.0 | Advisor Pro & Performance Tracking")
